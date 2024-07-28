@@ -40,7 +40,7 @@ class TouchData
 {
 public:
     TouchData() {}
-    ~TouchData(){};
+    ~TouchData() {};
     uint8_t available;
     uint8_t id[5];
     int16_t x[5];
