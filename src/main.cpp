@@ -52,17 +52,9 @@ static void lv_indev_read(lv_indev_t *indev, lv_indev_data_t *data)
         data->state = LV_INDEV_STATE_REL;
 }
 
-void setup()
+void init()
 {
-    Serial.begin(115200);
-
-    pinMode(LCD_VCI_EN, OUTPUT);
-    digitalWrite(LCD_VCI_EN, HIGH);
-
     CHSC5816_Initialization();
-    sh8601_init();
-
-    lcd_brightness(200); // 0-255
 
     lv_init();
 
@@ -87,38 +79,4 @@ void setup()
 
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, lv_indev_read);
-
-    auto btn = lv_button_create(lv_screen_active());
-
-    lv_obj_center(btn);
-    lv_obj_set_size(btn, 128, 128);
-    lv_obj_remove_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
-
-    auto on_event = [](lv_event_t *event)
-    {
-        switch (lv_event_get_code(event))
-        {
-        case LV_EVENT_PRESSED:
-            printf("PRESSED\n");
-            break;
-
-        case LV_EVENT_PRESS_LOST:
-            printf("PRESS_LOST\n");
-            break;
-
-        case LV_EVENT_CLICKED:
-            printf("CLICKED\n");
-            break;
-
-        default:
-            break;
-        }
-    };
-
-    lv_obj_add_event_cb(btn, on_event, LV_EVENT_ALL, NULL);
-}
-
-void loop()
-{
-    vTaskDelay(pdMS_TO_TICKS(lv_timer_handler()));
 }
