@@ -5,10 +5,10 @@
 #include "SPI.h"
 #include "pins_config.h"
 
-TouchDrvCHSC5816 touch;
-TouchDrvInterface *pTouch;
+static TouchDrvCHSC5816 touch;
+static TouchDrvInterface *pTouch;
 
-void CHSC5816_Initialization(void)
+static void CHSC5816_Initialization(void)
 {
     TouchDrvCHSC5816 *pd1 = static_cast<TouchDrvCHSC5816 *>(pTouch);
 
@@ -23,31 +23,20 @@ void CHSC5816_Initialization(void)
     }
 }
 
-void lv_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
+static void lv_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *pix_map)
 {
-    static size_t count = 0;
-    Serial.printf("display %zu\n", count++);
+    const int32_t w = (area->x2 - area->x1 + 1);
+    const int32_t h = (area->y2 - area->y1 + 1);
 
-    uint32_t w = (area->x2 - area->x1 + 1);
-    uint32_t h = (area->y2 - area->y1 + 1);
-    lcd_PushColors(area->x1, area->y1, w, h, (uint16_t *)&color_p->full);
-    lv_disp_flush_ready(disp);
+    lv_draw_sw_rgb565_swap(pix_map, w * h);
+
+    lcd_PushColors(area->x1, area->y1, w, h, (uint16_t *)pix_map);
+
+    lv_display_flush_ready(disp);
 }
 
-void my_rounder(lv_disp_drv_t *disp_drv, lv_area_t *area)
+static void lv_indev_read(lv_indev_t *indev, lv_indev_data_t *data)
 {
-    area->x1 = area->x1 & 0xFFFE;       // round down the refresh area x-axis start point to next even number - required for this display
-    area->x2 = (area->x2 & 0xFFFE) + 1; // round down the refresh area x-axis end point to next even number - required for this display
-
-    area->y1 = area->y1 & 0xFFFE;       // round down the refresh area y-axis start point to next even number - required for this display
-    area->y2 = (area->y2 & 0xFFFE) + 1; // round down the refresh area y-axis end point to next even number - required for this display
-}
-
-static void lv_indev_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
-{
-    static size_t count = 0;
-    Serial.printf("touch %zu\n", count++);
-
     int16_t Touch_x[2], Touch_y[2];
     uint8_t touchpad = touch.getPoint(Touch_x, Touch_y);
 
@@ -59,62 +48,74 @@ static void lv_indev_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
         data->point.y = Touch_y[0];
     }
     else
-    {
+
         data->state = LV_INDEV_STATE_REL;
-    }
 }
 
 void setup()
 {
-    pinMode(LCD_VCI_EN, OUTPUT);
-    digitalWrite(LCD_VCI_EN, HIGH); // enable display hardware
-
-    static lv_disp_draw_buf_t draw_buf;
-    static lv_color_t *buf;
-
     Serial.begin(115200);
+
+    pinMode(LCD_VCI_EN, OUTPUT);
+    digitalWrite(LCD_VCI_EN, HIGH);
+
     CHSC5816_Initialization();
     sh8601_init();
-    // lcd_setRotation(2); // 0-3
+
     lcd_brightness(200); // 0-255
+
     lv_init();
-    buf = (lv_color_t *)heap_caps_malloc(sizeof(lv_color_t) * LVGL_LCD_BUF_SIZE, MALLOC_CAP_INTERNAL);
-    lv_disp_draw_buf_init(&draw_buf, buf, NULL, LVGL_LCD_BUF_SIZE);
-    static lv_disp_drv_t disp_drv;
-    lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res = EXAMPLE_LCD_H_RES;
-    disp_drv.ver_res = EXAMPLE_LCD_V_RES;
 
-    // The rounder callback function is supposed to be required for partial update with this display according to the datasheet but I've found it unecessary so far...
-    // Perhaps the datasheet is out of date. Anyway, for the time being I've commented out the function.
-    // disp_drv.rounder_cb = my_rounder;
-
-    disp_drv.flush_cb = lv_disp_flush;
-    disp_drv.draw_buf = &draw_buf;
-
-    // The full_refresh setting is useful for testing if you run into problems with display artifacts caused by partial region updates.
-    // It forces LVGL to render a whole screen at a time but is therefore (possibly) much slower than only updating the 'dirty areas' which need redrawing.
-    // disp_drv.full_refresh = 1;
-
-    lv_disp_drv_register(&disp_drv);
-    static lv_indev_drv_t indev_drv;
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = lv_indev_read;
-    lv_indev_drv_register(&indev_drv);
-
-    static auto btn = lv_btn_create(lv_scr_act());
-
-    auto on_timeout = [](lv_timer_t *timer)
+    auto tick_get_cb = []() -> uint32_t
     {
-        static size_t count = 0;
-
-        lv_obj_align(btn, LV_ALIGN_LEFT_MID, count % lv_obj_get_width(lv_scr_act()), 0);
-
-        Serial.printf("on_timeout %zu\n", count++);
+        return esp_timer_get_time() / 1000ULL;
     };
 
-    lv_timer_create(on_timeout, 33, nullptr);
+    lv_tick_set_cb(tick_get_cb);
+
+    auto display = lv_display_create(EXAMPLE_LCD_H_RES, EXAMPLE_LCD_V_RES);
+
+    constexpr auto DRAW_BUFFER_SIZE = (LV_COLOR_DEPTH / 8U) * 390U * 16U;
+
+    auto draw_buf_1 = heap_caps_malloc(DRAW_BUFFER_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    auto draw_buf_2 = heap_caps_malloc(DRAW_BUFFER_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
+    lv_display_set_buffers(display, draw_buf_1, draw_buf_2, DRAW_BUFFER_SIZE, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(display, lv_disp_flush);
+
+    auto indev = lv_indev_create();
+
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, lv_indev_read);
+
+    auto btn = lv_button_create(lv_screen_active());
+
+    lv_obj_center(btn);
+    lv_obj_set_size(btn, 128, 128);
+    lv_obj_remove_flag(btn, LV_OBJ_FLAG_PRESS_LOCK);
+
+    auto on_event = [](lv_event_t *event)
+    {
+        switch (lv_event_get_code(event))
+        {
+        case LV_EVENT_PRESSED:
+            printf("PRESSED\n");
+            break;
+
+        case LV_EVENT_PRESS_LOST:
+            printf("PRESS_LOST\n");
+            break;
+
+        case LV_EVENT_CLICKED:
+            printf("CLICKED\n");
+            break;
+
+        default:
+            break;
+        }
+    };
+
+    lv_obj_add_event_cb(btn, on_event, LV_EVENT_ALL, NULL);
 }
 
 void loop()
